@@ -24,10 +24,25 @@
 канала. Пилот в канале с множителем m наблюдает m × эффект + шум, поэтому
 его результат делим на m, прежде чем смешивать с историей.
 
-LLM не используется: решения принимаются по данным и пилотам.
+LLM — дополнительный сигнал, а не основа решений. Смысловые профили всех
+тарифов (интернет, звонки, цена) даёт OpenAI по описаниям из
+tariff_dictionary.csv. В финальном плане, если у ячейки несколько целевых
+тарифов с оценкой в пределах 10% от лучшей, выбираем тот, чей профиль ближе
+к поведению абонентов ячейки.
+
+Профили берутся из tariff_profiles.json: make_tariff_profiles.py заранее
+спрашивает модель несколько раз и сохраняет самый частый ответ, поэтому
+решения воспроизводимы. Если файла нет — один батчевый запрос в начале act().
+Без ключа, при ошибке или тайм-ауте агент работает по той же логике без LLM.
 """
 
-from collections import Counter
+import hashlib
+import json
+import os
+import threading
+import time
+import urllib.request
+from collections import Counter, defaultdict
 from itertools import combinations
 from pathlib import Path
 
@@ -59,6 +74,15 @@ MAX_CAMPAIGNS = 10
 MAX_CUSTOMERS_PER_CAMPAIGN = 5000
 MERGE_SIMILARITY = 0.5        # объединяем ячейки, чьи эффекты на абонента различаются не более чем в 2 раза
 
+LLM_MODEL = "gpt-5.4-mini"
+LLM_URL = "https://api.openai.com/v1/chat/completions"
+PROFILES_FILE = "tariff_profiles.json"   # профили от LLM, заранее собранные make_tariff_profiles.py
+LLM_TIMEOUT = 60              # сек на единственный запрос — с большим запасом до лимита в 10 минут
+TIE_TOLERANCE = 0.10          # LLM выбирает только среди целевых тарифов с оценкой не ниже 90% от лучшей
+PROFILE_LEVELS = {"low": 0.0, "medium": 0.5, "high": 1.0}
+SEGMENT_LEVELS = {"data_segment": {"NON_USER": 0.0, "LITE": 0.5, "HEAVY": 1.0},
+                  "call_segment": {"LOW": 0.0, "MEDIUM": 0.5, "HIGH": 1.0}}
+
 
 class Agent:
     def __init__(self):
@@ -66,15 +90,16 @@ class Agent:
 
     def act(self, env):
         self.candidates = []
+        llm = self._start_llm()
         try:
-            return self._act(env)
+            return self._act(env, llm)
         except Exception as exc:
             print(f"[agent] сбой {type(exc).__name__}: {exc} — возвращаю найденные кандидаты")
             return self._fallback(env)
 
     # ------------------------------------------------------------------ план
 
-    def _act(self, env):
+    def _act(self, env, llm=None):
         self.candidates = self._build_candidates(env)
         if not self.candidates:
             return []
@@ -124,9 +149,9 @@ class Agent:
             if cand["screen_ratio"] is None and not cand["pilots"]:
                 self._screen(env, cand, screen_channel)
 
-        # Финал: каналы и кампании по итоговым оценкам.
+        # Финал: каналы и кампании по итоговым оценкам; LLM — только тай-брейкер.
         plan = self._plan(self._alive(), env, env.remaining_budget, env.remaining_contacts,
-                          merge=True)
+                          merge=True, profiles=self._collect_llm(llm))
         return [self._campaign(p) for p in plan]
 
     def _alive(self):
@@ -168,8 +193,13 @@ class Agent:
 
     def _build_candidates(self, env):
         profile = env.customer_profile
-        cells = (profile.groupby(["current_tariff", "arpu_segment"], observed=True)
-                 .agg(audience=("ID_NUMBER", "size"), avg_arpu=("predicted_arpu", "mean"))
+        # поведение ячейки (доля интернета и звонков, 0..1) — нужно только тай-брейкеру LLM
+        levels = profile.assign(**{
+            f"{dim}_level": profile[dim].map(mapping) for dim, mapping in SEGMENT_LEVELS.items()})
+        cells = (levels.groupby(["current_tariff", "arpu_segment"], observed=True)
+                 .agg(audience=("ID_NUMBER", "size"), avg_arpu=("predicted_arpu", "mean"),
+                      data_level=("data_segment_level", "mean"),
+                      call_level=("call_segment_level", "mean"))
                  .reset_index())
         cells = cells[cells["audience"] >= MIN_AUDIENCE]
         known = set(env.tariffs["tariff_plan_code"])
@@ -203,6 +233,7 @@ class Agent:
             "audience": int(row.audience),
             "avg_arpu": float(row.avg_arpu),
             "prior": float(row.prior),
+            "behavior": {"data": float(row.data_level), "calls": float(row.call_level)},
             "pilots": [],
             "screen_ratio": None,
         } for row in cand.itertuples()]
@@ -290,9 +321,132 @@ class Agent:
         w = n / (n + PRIOR_STRENGTH)
         return w * pilot_ratio + (1 - w) * cand["prior"]
 
+    # ------------------------------------------------------------------ LLM
+
+    @staticmethod
+    def _load_tariff_descriptions():
+        for path in (Path(__file__).resolve().parent / "tariff_dictionary.csv",
+                     Path("tariff_dictionary.csv")):
+            if path.exists():
+                df = pd.read_csv(path)
+                if "description" in df.columns:
+                    return dict(zip(df["tariff_plan_code"], df["description"].astype(str)))
+        return {}
+
+    @staticmethod
+    def _load_cached_profiles():
+        """Профили из tariff_profiles.json: ответ LLM зафиксирован, решения воспроизводимы."""
+        for path in (Path(__file__).resolve().parent / PROFILES_FILE, Path(PROFILES_FILE)):
+            if path.exists():
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                return Agent._parse_profiles(raw.get("profiles", {}))
+        return {}
+
+    def _start_llm(self):
+        """
+        Профили тарифов для тай-брейкера. Сначала — из tariff_profiles.json. Если
+        файла нет — один батчевый запрос к OpenAI в фоне, пока идут пилоты.
+        """
+        try:
+            cached = self._load_cached_profiles()
+            if cached:
+                return {"profiles": cached, "source": PROFILES_FILE}
+            key = os.environ.get("OPENAI_API_KEY")
+            descriptions = self._load_tariff_descriptions() if key else {}
+            if not descriptions:
+                return None
+            result = {}
+
+            def worker():
+                try:
+                    result["profiles"] = self._request_profiles(key, descriptions)
+                except Exception as exc:
+                    result["error"] = exc
+
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            return {"thread": thread, "result": result, "started": time.monotonic()}
+        except Exception:
+            return None
+
+    def _collect_llm(self, llm):
+        """Живой запрос ждём не дольше LLM_TIMEOUT от старта; при любой проблеме — без LLM."""
+        if llm is None:
+            return {}
+        try:
+            if "profiles" in llm:
+                profiles, source = llm["profiles"], llm["source"]
+            else:
+                thread, result = llm["thread"], llm["result"]
+                thread.join(max(LLM_TIMEOUT - (time.monotonic() - llm["started"]), 0))
+                if thread.is_alive():
+                    print(f"[agent] LLM не ответил за {LLM_TIMEOUT} с — продолжаю без него")
+                    return {}
+                if "error" in result:
+                    err = result["error"]
+                    print(f"[agent] LLM недоступен ({type(err).__name__}: {err}) — продолжаю без него")
+                    return {}
+                profiles, source = result.get("profiles") or {}, f"живой запрос к {LLM_MODEL}"
+            # отпечаток полей, влияющих на решение, — чтобы сравнивать ответы между запусками
+            decisive = {code: (p["data"], p["calls"]) for code, p in sorted(profiles.items())}
+            digest = hashlib.sha256(json.dumps(decisive).encode()).hexdigest()[:10]
+            print(f"[agent] LLM-профили {len(profiles)} тарифов: {source} (отпечаток {digest})")
+            return profiles
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _parse_profiles(raw, codes=None):
+        """{код: {"data": "low|medium|high", "calls": ...}} -> числовые уровни 0 / 0.5 / 1."""
+        profiles = {}
+        for code, item in raw.items():
+            if (codes is not None and code not in codes) or not isinstance(item, dict):
+                continue
+            data = PROFILE_LEVELS.get(str(item.get("data", "")).lower())
+            calls = PROFILE_LEVELS.get(str(item.get("calls", "")).lower())
+            if data is not None and calls is not None:
+                profiles[code] = {"data": data, "calls": calls,
+                                  "summary": str(item.get("summary", ""))}
+        return profiles
+
+    @staticmethod
+    def _request_profiles(key, descriptions):
+        return Agent._parse_profiles(Agent._ask_llm(key, descriptions), descriptions)
+
+    @staticmethod
+    def _ask_llm(key, descriptions):
+        """Один батчевый запрос: описания всех тарифов -> сырой JSON с профилями."""
+        listing = "\n".join(f"{code}: {text}" for code, text in descriptions.items())
+        prompt = (
+            "Ниже тарифы мобильного оператора. Для каждого определи, на что он ориентирован. "
+            "Верни JSON-объект, где ключ — код тарифа, а значение — объект с полями "
+            '"data" и "calls" (насколько тариф рассчитан на интернет и на звонки: "low", '
+            '"medium" или "high"), "price" ("budget", "mid" или "premium") и "summary" '
+            "(профиль в 3–6 словах).\n\n" + listing)
+        body = {
+            "model": LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": "Ты аналитик тарифов оператора связи. Отвечай только JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            # уменьшает разброс, но не устраняет его: метки отдельных тарифов между
+            # вызовами всё равно расходятся, поэтому решения берутся из tariff_profiles.json
+            "temperature": 0,
+        }
+        request = urllib.request.Request(
+            LLM_URL, data=json.dumps(body).encode("utf-8"),
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=LLM_TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        raw = json.loads(payload["choices"][0]["message"]["content"])
+        if isinstance(raw.get("tariffs"), dict):
+            raw = raw["tariffs"]
+        return raw
+
     # --------------------------------------------------------- сборка плана
 
-    def _plan(self, pool, env, budget, contacts, merge=False):
+    def _plan(self, pool, env, budget, contacts, merge=False, profiles=None):
         """
         Шаги 6–7 плюс объединение ячеек. Юнит — будущая кампания: одна ячейка
         или несколько с общим сегментом и целевым тарифом. Слияние принимаем,
@@ -301,7 +455,7 @@ class Agent:
         перед уточнением строим без слияний, чтобы не менять выбор уточняемых ячеек.
         """
         cost = {ch: spec["cost_per_contact"] for ch, spec in env.channels.items()}
-        units = self._cell_units(pool, env)
+        units = self._cell_units(pool, env, profiles)
         plan, value = self._assign(units, cost, budget, contacts)
         while merge:
             best = None
@@ -318,9 +472,9 @@ class Agent:
             value, units, plan = best
         return plan
 
-    def _cell_units(self, pool, env):
+    def _cell_units(self, pool, env, profiles=None):
         """По одному юниту на ячейку — абонент засчитывается один раз, лучший целевой тариф."""
-        best = {}
+        options = defaultdict(list)
         for cand in pool:
             est = self._estimate(cand)
             if est <= 0:
@@ -331,12 +485,42 @@ class Agent:
                    for ch, spec in env.channels.items()}
             if max(net.values()) <= 0:
                 continue
-            current = best.get(cand["cell"])
-            if current is None or max(net.values()) > max(current["net"].values()):
-                best[cand["cell"]] = {"members": [cand], "segment": cand["arpu_segment"],
-                                      "target": cand["target_tariff"], "size": size,
-                                      "net": net, "lifts": [lift]}
-        return list(best.values())
+            options[cand["cell"]].append({"members": [cand], "segment": cand["arpu_segment"],
+                                          "target": cand["target_tariff"], "size": size,
+                                          "net": net, "lifts": [lift]})
+        units = []
+        for cell_options in options.values():
+            best = max(cell_options, key=lambda u: max(u["net"].values()))
+            if profiles:
+                best = self._tie_break(best, cell_options, profiles)
+            units.append(best)
+        return units
+
+    def _tie_break(self, best, options, profiles):
+        """LLM-профиль решает только среди целевых тарифов с оценкой не ниже 90% от лучшей."""
+        top = self._estimate(best["members"][0])
+        close = [u for u in options
+                 if self._estimate(u["members"][0]) >= (1 - TIE_TOLERANCE) * top]
+        if len(close) < 2:
+            return best
+        scores = [self._profile_match(u["members"][0], profiles) for u in close]
+        if any(score is None for score in scores):
+            return best
+        chosen = max(zip(scores, close), key=lambda sc: (sc[0], max(sc[1]["net"].values())))[1]
+        if chosen is not best:
+            cand = chosen["members"][0]
+            print(f"[agent] LLM: {cand['current_tariff']} {cand['arpu_segment']} -> "
+                  f"{cand['target_tariff']} вместо {best['target']} (оценки близки, профиль ближе)")
+        return chosen
+
+    @staticmethod
+    def _profile_match(cand, profiles):
+        """Насколько профиль целевого тарифа похож на поведение ячейки: 0 — идеально, −2 — хуже всего."""
+        profile = profiles.get(cand["target_tariff"])
+        behavior = cand.get("behavior")
+        if not profile or not behavior or any(pd.isna(v) for v in behavior.values()):
+            return None
+        return -(abs(profile["data"] - behavior["data"]) + abs(profile["calls"] - behavior["calls"]))
 
     @staticmethod
     def _merge(a, b):

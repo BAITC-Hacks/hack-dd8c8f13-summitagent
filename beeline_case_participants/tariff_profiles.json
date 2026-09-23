@@ -1,0 +1,373 @@
+{
+  "model": "gpt-5.4-mini",
+  "temperature": 0,
+  "samples": 9,
+  "source": "tariff_dictionary.csv",
+  "profiles": {
+    "tariff_1": {
+      "data": "low",
+      "calls": "low",
+      "price": "budget",
+      "summary": "Без пакета, только базовая связь",
+      "votes": {
+        "data": {
+          "low": 9
+        },
+        "calls": {
+          "low": 9
+        },
+        "price": {
+          "budget": 9
+        }
+      }
+    },
+    "tariff_13": {
+      "data": "low",
+      "calls": "low",
+      "price": "budget",
+      "summary": "Минимум минут, без интернета",
+      "votes": {
+        "data": {
+          "low": 9
+        },
+        "calls": {
+          "low": 9
+        },
+        "price": {
+          "budget": 8,
+          "mid": 1
+        }
+      }
+    },
+    "tariff_2": {
+      "data": "low",
+      "calls": "low",
+      "price": "budget",
+      "summary": "Недорогой интернет, почти без звонков",
+      "votes": {
+        "data": {
+          "low": 9
+        },
+        "calls": {
+          "low": 9
+        },
+        "price": {
+          "budget": 8,
+          "mid": 1
+        }
+      }
+    },
+    "tariff_15": {
+      "data": "low",
+      "calls": "low",
+      "price": "budget",
+      "summary": "Базовые звонки, без интернета",
+      "votes": {
+        "data": {
+          "low": 9
+        },
+        "calls": {
+          "low": 9
+        },
+        "price": {
+          "budget": 8,
+          "mid": 1
+        }
+      }
+    },
+    "tariff_9": {
+      "data": "high",
+      "calls": "medium",
+      "price": "mid",
+      "summary": "Интернет с умеренными звонками",
+      "votes": {
+        "data": {
+          "high": 9
+        },
+        "calls": {
+          "medium": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_16": {
+      "data": "high",
+      "calls": "medium",
+      "price": "mid",
+      "summary": "Интернет-ориентированный, с минутами",
+      "votes": {
+        "data": {
+          "high": 9
+        },
+        "calls": {
+          "medium": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_4": {
+      "data": "medium",
+      "calls": "low",
+      "price": "mid",
+      "summary": "Сбалансированный, но с малым числом минут",
+      "votes": {
+        "data": {
+          "medium": 9
+        },
+        "calls": {
+          "low": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_17": {
+      "data": "medium",
+      "calls": "low",
+      "price": "mid",
+      "summary": "Интернет важнее звонков",
+      "votes": {
+        "data": {
+          "medium": 9
+        },
+        "calls": {
+          "low": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_3": {
+      "data": "high",
+      "calls": "medium",
+      "price": "mid",
+      "summary": "Баланс интернета и звонков",
+      "votes": {
+        "data": {
+          "high": 9
+        },
+        "calls": {
+          "medium": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_5": {
+      "data": "high",
+      "calls": "medium",
+      "price": "mid",
+      "summary": "Сбалансированный пакет для общения",
+      "votes": {
+        "data": {
+          "high": 7,
+          "medium": 2
+        },
+        "calls": {
+          "medium": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_6": {
+      "data": "high",
+      "calls": "medium",
+      "price": "mid",
+      "summary": "Сбалансированный пакет для общения",
+      "votes": {
+        "data": {
+          "high": 7,
+          "medium": 2
+        },
+        "calls": {
+          "medium": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_7": {
+      "data": "high",
+      "calls": "medium",
+      "price": "mid",
+      "summary": "Сбалансированный пакет для общения",
+      "votes": {
+        "data": {
+          "high": 7,
+          "medium": 2
+        },
+        "calls": {
+          "medium": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_8": {
+      "data": "high",
+      "calls": "medium",
+      "price": "mid",
+      "summary": "Сбалансированный пакет для общения",
+      "votes": {
+        "data": {
+          "high": 7,
+          "medium": 2
+        },
+        "calls": {
+          "medium": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_18": {
+      "data": "high",
+      "calls": "medium",
+      "price": "mid",
+      "summary": "Много интернета, умеренные звонки",
+      "votes": {
+        "data": {
+          "high": 9
+        },
+        "calls": {
+          "medium": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_21": {
+      "data": "high",
+      "calls": "high",
+      "price": "mid",
+      "summary": "Для активного интернета и звонков",
+      "votes": {
+        "data": {
+          "high": 9
+        },
+        "calls": {
+          "high": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_20": {
+      "data": "high",
+      "calls": "medium",
+      "price": "mid",
+      "summary": "Интернет с хорошим запасом минут",
+      "votes": {
+        "data": {
+          "high": 9
+        },
+        "calls": {
+          "medium": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_19": {
+      "data": "low",
+      "calls": "medium",
+      "price": "mid",
+      "summary": "Мало интернета, средние звонки",
+      "votes": {
+        "data": {
+          "medium": 3,
+          "low": 6
+        },
+        "calls": {
+          "medium": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_14": {
+      "data": "low",
+      "calls": "medium",
+      "price": "mid",
+      "summary": "Звонки важнее интернета",
+      "votes": {
+        "data": {
+          "low": 9
+        },
+        "calls": {
+          "medium": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_10": {
+      "data": "high",
+      "calls": "medium",
+      "price": "mid",
+      "summary": "Интернет с заметным пакетом минут",
+      "votes": {
+        "data": {
+          "high": 9
+        },
+        "calls": {
+          "medium": 9
+        },
+        "price": {
+          "mid": 9
+        }
+      }
+    },
+    "tariff_11": {
+      "data": "high",
+      "calls": "high",
+      "price": "premium",
+      "summary": "Много интернета и звонков",
+      "votes": {
+        "data": {
+          "high": 9
+        },
+        "calls": {
+          "high": 9
+        },
+        "price": {
+          "premium": 9
+        }
+      }
+    },
+    "tariff_12": {
+      "data": "high",
+      "calls": "high",
+      "price": "premium",
+      "summary": "Максимальный пакет для общения",
+      "votes": {
+        "data": {
+          "high": 9
+        },
+        "calls": {
+          "high": 9
+        },
+        "price": {
+          "premium": 9
+        }
+      }
+    }
+  }
+}
