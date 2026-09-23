@@ -12,6 +12,9 @@
   5. Оценка = вес_пилота × пилот + (1 − вес_пилота) × история,
      вес_пилота = n / (n + 50), n — все абоненты пилотов кандидата.
   6–7. Выбираем канал и жадно собираем до 10 кампаний в пределах бюджета и охвата.
+     В финальном плане ячейки с одним сегментом, целевым тарифом и похожей
+     оценкой объединяем в одну кампанию (filter_current_tariff =
+     "tariff_X;tariff_Y"), если это повышает ожидаемый результат.
   8. Любой сбой -> возвращаем лучшее из уже найденного.
 
 Все оценки ведутся в «базовых» единицах: относительный эффект до множителя
@@ -21,6 +24,7 @@
 LLM не используется: решения принимаются по данным и пилотам.
 """
 
+from itertools import combinations
 from pathlib import Path
 
 import numpy as np
@@ -41,6 +45,7 @@ REFINE_BUDGET_SHARE = 0.25    # доля бюджета, которую гото
 
 MAX_CAMPAIGNS = 10
 MAX_CUSTOMERS_PER_CAMPAIGN = 5000
+MERGE_SIMILARITY = 0.5        # объединяем ячейки, чьи эффекты на абонента различаются не более чем в 2 раза
 
 
 class Agent:
@@ -76,8 +81,8 @@ class Agent:
         plan = self._plan(self._alive(), env,
                           budget=env.remaining_budget * (1 - REFINE_BUDGET_SHARE),
                           contacts=env.remaining_contacts - N_REFINE * REFINE_MAX_SIZE)
-        planned = {id(p["cand"]): p["channel"] for p in plan}
-        queue = [p["cand"] for p in plan] + sorted(
+        planned = {id(c): p["channel"] for p in plan for c in p["members"]}
+        queue = [c for p in plan for c in p["members"]] + sorted(
             (c for c in self._alive() if id(c) not in planned),
             key=lambda c: self._estimate(c) * c["avg_arpu"] * c["audience"], reverse=True)
 
@@ -96,7 +101,8 @@ class Agent:
                 refined_cells.add(cand["cell"])
 
         # Финал: каналы и кампании по итоговым оценкам.
-        plan = self._plan(self._alive(), env, env.remaining_budget, env.remaining_contacts)
+        plan = self._plan(self._alive(), env, env.remaining_budget, env.remaining_contacts,
+                          merge=True)
         return [self._campaign(p) for p in plan]
 
     def _alive(self):
@@ -225,45 +231,84 @@ class Agent:
 
     # --------------------------------------------------------- сборка плана
 
-    def _plan(self, pool, env, budget, contacts):
+    def _plan(self, pool, env, budget, contacts, merge=False):
         """
-        Шаги 6–7. Каждой кампании — лучший канал на контакт, пока хватает бюджета.
-        Сначала отбираем кампании (по одной на ячейку — абонент засчитывается
-        один раз), стартуя с самого дешёвого канала. Затем повышаем каналы
-        в порядке «прирост на единицу затрат», пока позволяет бюджет. Без
-        ограничения бюджета это ровно максимум чистого результата на контакт.
+        Шаги 6–7 плюс объединение ячеек. Юнит — будущая кампания: одна ячейка
+        или несколько с общим сегментом и целевым тарифом. Слияние принимаем,
+        только если оно повышает ожидаемый результат плана (например, освобождает
+        слот под ещё одну ячейку сверх лимита в 10 кампаний). Предварительный план
+        перед уточнением строим без слияний, чтобы не менять выбор уточняемых ячеек.
         """
-        channels = env.channels
-        cost = {ch: spec["cost_per_contact"] for ch, spec in channels.items()}
+        cost = {ch: spec["cost_per_contact"] for ch, spec in env.channels.items()}
+        units = self._cell_units(pool, env)
+        plan, value = self._assign(units, cost, budget, contacts)
+        while merge:
+            best = None
+            for a, b in combinations(units, 2):
+                merged = self._merge(a, b)
+                if merged is None:
+                    continue
+                trial = [u for u in units if u is not a and u is not b] + [merged]
+                trial_plan, trial_value = self._assign(trial, cost, budget, contacts)
+                if trial_value > value and (best is None or trial_value > best[0]):
+                    best = (trial_value, trial, trial_plan)
+            if best is None:
+                break
+            value, units, plan = best
+        return plan
 
-        entries = []
+    def _cell_units(self, pool, env):
+        """По одному юниту на ячейку — абонент засчитывается один раз, лучший целевой тариф."""
+        best = {}
         for cand in pool:
             est = self._estimate(cand)
             if est <= 0:
                 continue
-            net = {ch: est * spec["conversion_multiplier"] * cand["avg_arpu"] - cost[ch]
-                   for ch, spec in channels.items()}
+            size = min(cand["audience"], MAX_CUSTOMERS_PER_CAMPAIGN)
+            lift = est * cand["avg_arpu"]
+            net = {ch: size * (lift * spec["conversion_multiplier"] - spec["cost_per_contact"])
+                   for ch, spec in env.channels.items()}
             if max(net.values()) <= 0:
                 continue
-            entries.append({"cand": cand, "net": net})
-        entries.sort(key=lambda e: max(e["net"].values())
-                     * min(e["cand"]["audience"], MAX_CUSTOMERS_PER_CAMPAIGN), reverse=True)
+            current = best.get(cand["cell"])
+            if current is None or max(net.values()) > max(current["net"].values()):
+                best[cand["cell"]] = {"members": [cand], "segment": cand["arpu_segment"],
+                                      "target": cand["target_tariff"], "size": size,
+                                      "net": net, "lifts": [lift]}
+        return list(best.values())
 
-        chosen, used_cells = [], set()
-        contacts_left, budget_left = contacts, budget
-        for e in entries:
+    @staticmethod
+    def _merge(a, b):
+        """Один сегмент и целевой тариф, похожий эффект, не больше 5000 абонентов."""
+        if (a["segment"], a["target"]) != (b["segment"], b["target"]):
+            return None
+        if a["size"] + b["size"] > MAX_CUSTOMERS_PER_CAMPAIGN:
+            return None
+        lifts = a["lifts"] + b["lifts"]
+        if min(lifts) < MERGE_SIMILARITY * max(lifts):
+            return None
+        return {"members": a["members"] + b["members"], "segment": a["segment"],
+                "target": a["target"], "size": a["size"] + b["size"],
+                "net": {ch: a["net"][ch] + b["net"][ch] for ch in a["net"]}, "lifts": lifts}
+
+    @staticmethod
+    def _assign(units, cost, budget, contacts):
+        """
+        Отбираем до 10 юнитов, стартуя с самого дешёвого канала, затем повышаем
+        каналы в порядке «прирост на единицу затрат», пока позволяет бюджет. Без
+        ограничения бюджета это ровно максимум чистого результата на контакт.
+        """
+        chosen, contacts_left, budget_left = [], contacts, budget
+        for unit in sorted(units, key=lambda u: max(u["net"].values()), reverse=True):
             if len(chosen) >= MAX_CAMPAIGNS or contacts_left <= 0:
                 break
-            if e["cand"]["cell"] in used_cells:
-                continue
-            size = min(e["cand"]["audience"], MAX_CUSTOMERS_PER_CAMPAIGN, contacts_left)
-            affordable = [ch for ch in channels if e["net"][ch] > 0 and size * cost[ch] <= budget_left]
+            size = min(unit["size"], contacts_left)
+            net = {ch: v * size / unit["size"] for ch, v in unit["net"].items()}
+            affordable = [ch for ch in cost if net[ch] > 0 and size * cost[ch] <= budget_left]
             if not affordable:
                 continue
-            base = min(affordable, key=lambda ch: (cost[ch], -e["net"][ch]))
-            e.update(size=size, channel=base)
-            chosen.append(e)
-            used_cells.add(e["cand"]["cell"])
+            base = min(affordable, key=lambda ch: (cost[ch], -net[ch]))
+            chosen.append({"members": unit["members"], "size": size, "net": net, "channel": base})
             contacts_left -= size
             budget_left -= size * cost[base]
 
@@ -271,8 +316,8 @@ class Agent:
             best = None
             for e in chosen:
                 cur = e["channel"]
-                for ch in channels:
-                    gain = e["size"] * (e["net"][ch] - e["net"][cur])
+                for ch in cost:
+                    gain = e["net"][ch] - e["net"][cur]
                     extra = e["size"] * (cost[ch] - cost[cur])
                     if gain <= 0 or extra > budget_left:
                         continue
@@ -286,18 +331,20 @@ class Agent:
             budget_left -= extra
 
         for e in chosen:
-            e["value"] = e["size"] * e["net"][e["channel"]]
+            e["value"] = e["net"][e["channel"]]
         chosen.sort(key=lambda e: e["value"], reverse=True)
-        return chosen
+        return chosen, sum(e["value"] for e in chosen)
 
     @staticmethod
     def _campaign(entry):
-        cand = entry["cand"]
+        members = entry["members"]
+        tariffs = [c["current_tariff"] for c in members]
+        head = members[0]
         return {
-            "campaign_name": f"{cand['current_tariff']}_{cand['arpu_segment']}_to_{cand['target_tariff']}",
-            "filter_arpu_segment": cand["arpu_segment"],
-            "filter_current_tariff": cand["current_tariff"],
-            "target_tariff": cand["target_tariff"],
+            "campaign_name": f"{'+'.join(tariffs)}_{head['arpu_segment']}_to_{head['target_tariff']}",
+            "filter_arpu_segment": head["arpu_segment"],
+            "filter_current_tariff": ";".join(tariffs),
+            "target_tariff": head["target_tariff"],
             "channel": entry["channel"],
         }
 
@@ -309,7 +356,7 @@ class Agent:
                    and (c["screen_ratio"] is None or c["screen_ratio"] > 0)]
         pool = piloted or self.candidates
         try:
-            plan = self._plan(pool, env, env.remaining_budget, env.remaining_contacts)
+            plan = self._plan(pool, env, env.remaining_budget, env.remaining_contacts, merge=True)
             return [self._campaign(p) for p in plan]
         except Exception:
             pass
@@ -319,7 +366,7 @@ class Agent:
             for cand in sorted(pool, key=self._estimate, reverse=True):
                 if self._estimate(cand) > 0 and cand["cell"] not in used:
                     used.add(cand["cell"])
-                    campaigns.append(self._campaign({"cand": cand, "channel": free}))
+                    campaigns.append(self._campaign({"members": [cand], "channel": free}))
             return campaigns[:MAX_CAMPAIGNS]
         except Exception:
             return []
