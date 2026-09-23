@@ -6,9 +6,12 @@
      (from, to, arpu_segment): среднее arpu_change_pct × доля таких переходов.
   2. Скрещиваем с аудиторией: кандидаты (current_tariff, arpu_segment, target)
      с аудиторией >= 100, historical_score = lift × средний predicted_arpu.
-  3. Скрининг: дешёвые пилоты на 30 абонентов в самом дешёвом канале.
+  3. Скрининг: пилоты в самом дешёвом канале. Размер адаптивный: чем ближе
+     априорный эффект к нулю относительно шума пилота, тем больше выборка.
   4. Уточнение: пилоты на 150–200 абонентов в том канале, который планируем
-     использовать в финале, для лучших выживших после скрининга.
+     использовать в финале, для лучших выживших после скрининга. Сколько
+     пилотов отдать уточнению, решаем по ходу скрининга: если выживших ячеек
+     заметно больше 10 — уточняем меньше и скринингуем больше.
   5. Оценка = вес_пилота × пилот + (1 − вес_пилота) × история,
      вес_пилота = n / (n + 50), n — все абоненты пилотов кандидата.
   6–7. Выбираем канал и жадно собираем до 10 кампаний в пределах бюджета и охвата.
@@ -24,6 +27,7 @@
 LLM не используется: решения принимаются по данным и пилотам.
 """
 
+from collections import Counter
 from itertools import combinations
 from pathlib import Path
 
@@ -38,8 +42,16 @@ HISTORY_SHRINK = 5.0          # малые группы истории стяг�
 
 MIN_AUDIENCE = 100
 N_CANDIDATES = 20
-N_REFINE = 6
-SCREEN_SIZE = 30
+
+PILOT_NOISE_STD = 0.80        # шум эффекта на одного абонента, документирован в environment.py
+SCREEN_Z = 1.5                # ожидаемый результат скрининга должен отстоять от нуля на 1.5 ст. ошибки
+SCREEN_MIN_SIZE, SCREEN_MAX_SIZE = 10, 200
+
+N_REFINE = 6                  # уточнений по умолчанию, пока доля выживших не прояснится
+MIN_REFINE = 3
+REFINE_FORECAST_AFTER = 6     # прогноз числа выживших — после стольких скринингов
+REFINE_DEADZONE = 2           # «заметно» больше или меньше 10 выживших ячеек
+MAX_REFINES_PER_CELL = 2
 REFINE_MIN_SIZE, REFINE_MAX_SIZE = 150, 200
 REFINE_BUDGET_SHARE = 0.25    # доля бюджета, которую готовы отдать на уточняющие пилоты
 
@@ -68,37 +80,49 @@ class Agent:
             return []
         channels = env.channels
 
-        # Фаза 1: скрининг. Пилотов 20, поэтому под скрининг идёт всё, кроме уточнения.
+        # Фаза 1: скрининг. Проверяем кандидатов по порядку, пока на уточнение
+        # остаётся столько пилотов, сколько ему нужно при текущей доле выживших.
         screen_channel = min(channels, key=lambda ch: channels[ch]["cost_per_contact"])
-        n_screen = max(env.pilots_left - N_REFINE, 0)
-        for cand in self.candidates[:n_screen]:
-            if self._pilot(env, cand, screen_channel, SCREEN_SIZE):
-                cand["screen_ratio"] = cand["pilots"][-1]["ratio"]
+        total_pilots = env.pilots_left
+        for cand in self.candidates:
+            if env.pilots_left <= self._refine_target(total_pilots):
+                break
+            self._screen(env, cand, screen_channel)
 
         # Фаза 2: уточнение на лучших выживших, в канале будущей кампании.
-        per_pilot_cap = (env.remaining_budget * REFINE_BUDGET_SHARE
-                         / max(min(N_REFINE, env.pilots_left), 1))
+        n_refine = env.pilots_left
+        per_pilot_cap = env.remaining_budget * REFINE_BUDGET_SHARE / max(n_refine, 1)
         plan = self._plan(self._alive(), env,
                           budget=env.remaining_budget * (1 - REFINE_BUDGET_SHARE),
-                          contacts=env.remaining_contacts - N_REFINE * REFINE_MAX_SIZE)
+                          contacts=env.remaining_contacts - n_refine * REFINE_MAX_SIZE)
         planned = {id(c): p["channel"] for p in plan for c in p["members"]}
         queue = [c for p in plan for c in p["members"]] + sorted(
             (c for c in self._alive() if id(c) not in planned),
             key=lambda c: self._estimate(c) * c["avg_arpu"] * c["audience"], reverse=True)
 
-        refined_cells = set()
-        for cand in queue:
-            if env.pilots_left <= 0 or len(refined_cells) >= N_REFINE:
+        # Первый круг — по пилоту на ячейку; если пилоты остались (выживших мало),
+        # второй круг по тем же ячейкам в порядке ценности.
+        refined = Counter()
+        for round_ in range(MAX_REFINES_PER_CELL):
+            for cand in queue:
+                if env.pilots_left <= 0:
+                    break
+                if refined[cand["cell"]] > round_:
+                    continue
+                n = int(np.clip(cand["audience"] // 2, REFINE_MIN_SIZE, REFINE_MAX_SIZE))
+                channel = self._refine_channel(cand, planned.get(id(cand)), per_pilot_cap, env)
+                cost = channels[channel]["cost_per_contact"]
+                if cost > 0:
+                    n = min(n, int(per_pilot_cap // cost))
+                if self._pilot(env, cand, channel, n):
+                    refined[cand["cell"]] += 1
+
+        # Если уточнять больше нечего, оставшиеся пилоты не простаивают — скринингуем дальше.
+        for cand in self.candidates:
+            if env.pilots_left <= 0:
                 break
-            if cand["cell"] in refined_cells:
-                continue
-            n = int(np.clip(cand["audience"] // 2, REFINE_MIN_SIZE, REFINE_MAX_SIZE))
-            channel = self._refine_channel(cand, planned.get(id(cand)), per_pilot_cap, env)
-            cost = channels[channel]["cost_per_contact"]
-            if cost > 0:
-                n = min(n, int(per_pilot_cap // cost))
-            if self._pilot(env, cand, channel, n):
-                refined_cells.add(cand["cell"])
+            if cand["screen_ratio"] is None and not cand["pilots"]:
+                self._screen(env, cand, screen_channel)
 
         # Финал: каналы и кампании по итоговым оценкам.
         plan = self._plan(self._alive(), env, env.remaining_budget, env.remaining_contacts,
@@ -184,6 +208,43 @@ class Agent:
         } for row in cand.itertuples()]
 
     # --------------------------------------------------------------- пилоты
+
+    @staticmethod
+    def _screen_size(cand, multiplier):
+        """
+        Пилот наблюдает эффект × множитель канала + шум σ/√n. Размер берём таким,
+        чтобы ожидаемый результат отстоял от нуля на SCREEN_Z стандартных ошибок:
+        около нуля (граница прибыли и убытка) выборка растёт, при явно высоком
+        или явно отрицательном эффекте — уменьшается до подтверждающей.
+        """
+        signal = abs(cand["prior"]) * multiplier
+        if signal <= 0:
+            return SCREEN_MAX_SIZE
+        n = (SCREEN_Z * PILOT_NOISE_STD / signal) ** 2
+        return int(np.clip(round(n), SCREEN_MIN_SIZE, SCREEN_MAX_SIZE))
+
+    def _screen(self, env, cand, channel):
+        n = self._screen_size(cand, env.channels[channel]["conversion_multiplier"])
+        if self._pilot(env, cand, channel, n):
+            cand["screen_ratio"] = cand["pilots"][-1]["ratio"]
+
+    def _refine_target(self, total_pilots):
+        """
+        Сколько пилотов оставить на уточнение. По доле выживших на скрининге
+        прогнозируем, сколько ячеек выживет при скрининге по умолчанию. Если
+        заметно больше 10 — уточнений меньше, а скринингов больше. Если выживших
+        мало, скрининг не сокращаем: мало выживших чаще означает шум маленьких
+        пилотов, чем плохих кандидатов, и ранняя остановка стоит охвата.
+        """
+        screened = [c for c in self.candidates if c["screen_ratio"] is not None]
+        if len(screened) < REFINE_FORECAST_AFTER:
+            return N_REFINE
+        alive_cells = {c["cell"] for c in screened if c["screen_ratio"] > 0}
+        projected = len(alive_cells) * (total_pilots - N_REFINE) / len(screened)
+        surplus = projected - MAX_CAMPAIGNS
+        if surplus < REFINE_DEADZONE:
+            return N_REFINE
+        return int(max(round(N_REFINE - surplus), MIN_REFINE))
 
     def _pilot(self, env, cand, channel, n):
         if env.pilots_left <= 0:
