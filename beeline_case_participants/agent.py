@@ -32,8 +32,10 @@ tariff_dictionary.csv. В финальном плане, если у ячейк�
 
 Профили берутся из tariff_profiles.json: make_tariff_profiles.py заранее
 спрашивает модель несколько раз и сохраняет самый частый ответ, поэтому
-решения воспроизводимы. Если файла нет — один батчевый запрос в начале act().
-Без ключа, при ошибке или тайм-ауте агент работает по той же логике без LLM.
+решения воспроизводимы. Кэш используется, только если хэш описаний тарифов
+совпадает с сохранённым; если файла нет или описания изменились — один
+батчевый запрос в начале act(). Без ключа, при ошибке или тайм-ауте агент
+работает по той же логике без LLM.
 """
 
 import hashlib
@@ -334,26 +336,54 @@ class Agent:
         return {}
 
     @staticmethod
-    def _load_cached_profiles():
-        """Профили из tariff_profiles.json: ответ LLM зафиксирован, решения воспроизводимы."""
+    def _description_hash(text):
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _descriptions_hash(descriptions):
+        """sha256 от всех описаний тарифов, склеенных по порядку кодов, — версия исходных данных кэша."""
+        joined = "\n".join(f"{code}\t{descriptions[code]}" for code in sorted(descriptions))
+        return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _load_cache():
         for path in (Path(__file__).resolve().parent / PROFILES_FILE, Path(PROFILES_FILE)):
             if path.exists():
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                return Agent._parse_profiles(raw.get("profiles", {}))
-        return {}
+                return json.loads(path.read_text(encoding="utf-8"))
+        return None
 
     def _start_llm(self):
         """
-        Профили тарифов для тай-брейкера. Сначала — из tariff_profiles.json. Если
-        файла нет — один батчевый запрос к OpenAI в фоне, пока идут пилоты.
+        Профили тарифов для тай-брейкера. Кэш tariff_profiles.json используем, только
+        если хэш описаний из tariff_dictionary.csv совпадает с сохранённым при
+        генерации. Если файла нет или описания изменились — один батчевый запрос к
+        OpenAI в фоне, пока идут пилоты; из кэша при этом берём профили тарифов,
+        чьи описания не менялись. Не вышло — работаем без LLM.
         """
         try:
-            cached = self._load_cached_profiles()
-            if cached:
-                return {"profiles": cached, "source": PROFILES_FILE}
+            descriptions = self._load_tariff_descriptions()
+            cache = self._load_cache()
+            base, stale = {}, sorted(descriptions)
+            if cache is not None and descriptions:
+                cached = cache.get("profiles", {})
+                if cache.get("descriptions_hash") == self._descriptions_hash(descriptions):
+                    return {"profiles": self._parse_profiles(cached), "source": PROFILES_FILE}
+                stale = [code for code in sorted(descriptions)
+                         if not isinstance(cached.get(code), dict) or cached[code].get(
+                             "description_sha256") != self._description_hash(descriptions[code])]
+                base = self._parse_profiles({c: p for c, p in cached.items()
+                                             if c in descriptions and c not in stale})
+                if not stale:   # тарифы только удалили — оставшиеся профили актуальны
+                    return {"profiles": base, "source": f"{PROFILES_FILE}, без удалённых тарифов"}
+                print(f"[agent] {PROFILES_FILE} устарел: изменились или добавлены описания "
+                      f"{', '.join(stale)} — пробую обновить живым запросом")
+            elif cache is not None:
+                print(f"[agent] нет tariff_dictionary.csv — не могу проверить {PROFILES_FILE}, работаю без LLM")
+                return None
             key = os.environ.get("OPENAI_API_KEY")
-            descriptions = self._load_tariff_descriptions() if key else {}
-            if not descriptions:
+            if not key or not descriptions:
+                if cache is not None:
+                    print("[agent] ключа OPENAI_API_KEY нет — устаревший кэш не использую, работаю без LLM")
                 return None
             result = {}
 
@@ -365,7 +395,8 @@ class Agent:
 
             thread = threading.Thread(target=worker, daemon=True)
             thread.start()
-            return {"thread": thread, "result": result, "started": time.monotonic()}
+            return {"thread": thread, "result": result, "started": time.monotonic(),
+                    "base": base, "refresh": stale if cache is not None else None}
         except Exception:
             return None
 
@@ -387,6 +418,12 @@ class Agent:
                     print(f"[agent] LLM недоступен ({type(err).__name__}: {err}) — продолжаю без него")
                     return {}
                 profiles, source = result.get("profiles") or {}, f"живой запрос к {LLM_MODEL}"
+                if llm.get("refresh") is not None:
+                    # живой запрос видел все тарифы (метки относительные), но из него
+                    # берём только изменившиеся — остальные остаются из кэша
+                    fresh = {c: profiles[c] for c in llm["refresh"] if c in profiles}
+                    profiles = {**llm["base"], **fresh}
+                    source = f"{PROFILES_FILE} + живой запрос к {LLM_MODEL} для {len(fresh)} тарифов"
             # отпечаток полей, влияющих на решение, — чтобы сравнивать ответы между запусками
             decisive = {code: (p["data"], p["calls"]) for code, p in sorted(profiles.items())}
             digest = hashlib.sha256(json.dumps(decisive).encode()).hexdigest()[:10]

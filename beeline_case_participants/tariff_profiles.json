@@ -3,6 +3,7 @@
   "temperature": 0,
   "samples": 9,
   "source": "tariff_dictionary.csv",
+  "descriptions_hash": "d6501ebc793d1ee00e91096645a00b92a9026b4160ca4746a5f01d8c1a81e806",
   "profiles": {
     "tariff_1": {
       "data": "low",
@@ -19,7 +20,8 @@
         "price": {
           "budget": 9
         }
-      }
+      },
+      "description_sha256": "1449de1f20eb52429a35332a81a90669b844f1dad43a08bb0b4ae38cba0d9e4f"
     },
     "tariff_13": {
       "data": "low",
@@ -37,7 +39,8 @@
           "budget": 8,
           "mid": 1
         }
-      }
+      },
+      "description_sha256": "169428a7ad799aefc7dd96ec326fa270dcc08499dc287ae53f412cfb14121ac0"
     },
     "tariff_2": {
       "data": "low",
@@ -55,7 +58,8 @@
           "budget": 8,
           "mid": 1
         }
-      }
+      },
+      "description_sha256": "769972a6bbe26aef0ef58581504a703c1688ba3a0883e04b9f816f763786eece"
     },
     "tariff_15": {
       "data": "low",
@@ -73,7 +77,8 @@
           "budget": 8,
           "mid": 1
         }
-      }
+      },
+      "description_sha256": "4e8374cb238fe0dbb58c18e2622a89197e9621fc6cb4f669c54e049fba70a54f"
     },
     "tariff_9": {
       "data": "high",
@@ -90,7 +95,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "2b856017113d844b2c22fa6a5ec20a7e8c3f1a25f05d7dc5a6310d81a16eb440"
     },
     "tariff_16": {
       "data": "high",
@@ -107,7 +113,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "32ad65ccc9f1c247b09e134f1c926a652c20db5b72143093c0cb8d0069aa6812"
     },
     "tariff_4": {
       "data": "medium",
@@ -124,7 +131,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "9894451da194057fa7661b1f8ed286faa9c47a7a621c7405139e292ea55f6d31"
     },
     "tariff_17": {
       "data": "medium",
@@ -141,7 +149,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "a42ed2e0098996ab49e22a1ee46b5df48250d04c767b6ee414f5714ec459cca4"
     },
     "tariff_3": {
       "data": "high",
@@ -158,7 +167,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "a49819f13c6df850cfcc41495985b4da461287906557df50219b3e7b8736246f"
     },
     "tariff_5": {
       "data": "high",
@@ -176,7 +186,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "68d138ac785db981406b96e74c990d44e169fcba7b54a9db9aac0108d27c5f59"
     },
     "tariff_6": {
       "data": "high",
@@ -194,7 +205,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "68d138ac785db981406b96e74c990d44e169fcba7b54a9db9aac0108d27c5f59"
     },
     "tariff_7": {
       "data": "high",
@@ -212,7 +224,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "68d138ac785db981406b96e74c990d44e169fcba7b54a9db9aac0108d27c5f59"
     },
     "tariff_8": {
       "data": "high",
@@ -230,7 +243,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "68d138ac785db981406b96e74c990d44e169fcba7b54a9db9aac0108d27c5f59"
     },
     "tariff_18": {
       "data": "high",
@@ -247,7 +261,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "472c84f621f060bd6b0844471634f5e7f7c4614c7d29439d997b195a830154e8"
     },
     "tariff_21": {
       "data": "high",
@@ -264,7 +279,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "bb94c247301700dccf981309bf912bb10cbb761921b89c32c99dab98d40001f4"
     },
     "tariff_20": {
       "data": "high",
@@ -281,7 +297,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "ef84fdfb980b4de058e993f4180fe9d231e3d10bdf1c3107b42fe1f8335650ad"
     },
     "tariff_19": {
       "data": "low",
@@ -299,7 +316,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "6637c07208c57ff941ba8e92056aa396356d96362dfb66853baeb4250df4f0ae"
     },
     "tariff_14": {
       "data": "low",
@@ -316,7 +334,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "fec90be67ecdbef6a95484b7253a719c1c04c605ab88ff5ac2306e3ee381bf0b"
     },
     "tariff_10": {
       "data": "high",
@@ -333,7 +352,8 @@
         "price": {
           "mid": 9
         }
-      }
+      },
+      "description_sha256": "ce0b35ca2d334c0ea5f40c178b496ddd1ef552e684f850f131f5fb91993d3c1a"
     },
     "tariff_11": {
       "data": "high",
@@ -350,7 +370,8 @@
         "price": {
           "premium": 9
         }
-      }
+      },
+      "description_sha256": "7ec25a59434d9e99670ae6e72d00e889c5f62a9cf8fbf98d10c7d05e88882461"
     },
     "tariff_12": {
       "data": "high",
@@ -367,7 +388,8 @@
         "price": {
           "premium": 9
         }
-      }
+      },
+      "description_sha256": "4b138c220c701136df4b343ddee3a327dfa89666997283299cce7371402c010a"
     }
   }
 }

@@ -9,6 +9,9 @@
 между вызовами расходятся, а зафиксированный в файле ответ делает решения агента
 воспроизводимыми. В файл пишем и распределение голосов — видно, где модель
 колебалась.
+
+Ещё в файл пишем sha256 описаний: общий по всему справочнику и по каждому тарифу.
+Агент сверяет их с текущим tariff_dictionary.csv и не использует устаревший кэш.
 """
 
 import json
@@ -19,6 +22,16 @@ from agent import LLM_MODEL, PROFILES_FILE, Agent
 
 N_SAMPLES = 9
 FIELDS = ("data", "calls", "price")
+
+
+def stamp_hashes(result, descriptions):
+    """Версия исходных данных: по ней агент понимает, что кэш устарел."""
+    for code, profile in result["profiles"].items():
+        if code in descriptions:
+            profile["description_sha256"] = Agent._description_hash(descriptions[code])
+    header = {k: v for k, v in result.items() if k not in ("descriptions_hash", "profiles")}
+    return {**header, "descriptions_hash": Agent._descriptions_hash(descriptions),
+            "profiles": result["profiles"]}
 
 
 def build_profiles(key, n_samples=N_SAMPLES):
@@ -34,8 +47,8 @@ def build_profiles(key, n_samples=N_SAMPLES):
                                    if all(str(i.get(f, "")).lower() == profile[f] for f in FIELDS)), "")
         profile["votes"] = {f: dict(votes[f]) for f in FIELDS}
         profiles[code] = profile
-    return {"model": LLM_MODEL, "temperature": 0, "samples": n_samples,
-            "source": "tariff_dictionary.csv", "profiles": profiles}
+    return stamp_hashes({"model": LLM_MODEL, "temperature": 0, "samples": n_samples,
+                         "source": "tariff_dictionary.csv", "profiles": profiles}, descriptions)
 
 
 def main():
