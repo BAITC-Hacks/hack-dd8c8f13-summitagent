@@ -195,6 +195,8 @@ mock_environment.py ──► environment.py (AgentEnvironment + run_pilot)
                         agent.py: Agent.act(env)
                           ├─ tariff_profiles.json → профили тарифов
                           │    (нет файла → один запрос к OpenAI)
+                          │    (файл устарел, хэш не совпал → один запрос,
+                          │     из него — профили изменившихся тарифов)
                           ├─ data/change_tariff.csv → априорный эффект
                           ├─ env.run_pilot(...) × 20 → наблюдаемые эффекты
                           └─ список до 10 кампаний
@@ -217,9 +219,11 @@ mock_environment.py ──► environment.py (AgentEnvironment + run_pilot)
    pip install pandas numpy
    ```
 
-2. Перейдите в папку проекта. Скрипты читают `data/`, `customer_profile.csv` и
-   `tariff_profiles.json` по относительным путям, поэтому запускать их нужно
-   отсюда:
+2. Перейдите в папку проекта. `local_eval.py` и `make_submission.py` читают
+   `data/` и `customer_profile.csv` по путям относительно текущей папки,
+   поэтому запускать их нужно отсюда. Сам агент ищет `data/change_tariff.csv`,
+   `tariff_dictionary.csv` и `tariff_profiles.json` сначала рядом с `agent.py`,
+   а затем в текущей папке:
 
    ```bash
    cd beeline_case_participants
@@ -244,9 +248,12 @@ mock_environment.py ──► environment.py (AgentEnvironment + run_pilot)
    ```
 
 Для запуска агента ключ OpenAI не нужен: профили уже лежат в
-`tariff_profiles.json`. Ключ понадобится, только чтобы пересобрать профили,
-например после изменения тарифов. В PowerShell ключ задаётся командой
-`$env:OPENAI_API_KEY = "..."`, в bash — `export OPENAI_API_KEY=...`. После этого:
+`tariff_profiles.json`. Ключ понадобится в двух случаях: чтобы пересобрать
+профили скриптом `make_tariff_profiles.py` и самому агенту, если кэш устарел
+(описания тарифов изменились) — тогда агент обновляет профили изменившихся
+тарифов живым запросом. В PowerShell ключ задаётся командой
+`$env:OPENAI_API_KEY = "..."`, в bash — `export OPENAI_API_KEY=...`. Пересборка
+профилей:
 
 ```bash
 python make_tariff_profiles.py
@@ -305,9 +312,9 @@ python make_tariff_profiles.py
 | `feature_dictionary.csv` | Справочное описание колонок, в коде не используется |
 
 Единственная внешняя интеграция — OpenAI API. Агент обращается к нему, только
-если `tariff_profiles.json` отсутствует, а `make_tariff_profiles.py` — при
-пересборке профилей. В запрос уходят только описания тарифов, данных абонентов
-в нём нет. В остальном агент работает офлайн: объект `env` и файлы
+если `tariff_profiles.json` отсутствует или устарел (хэш описаний не совпал), а
+`make_tariff_profiles.py` — при пересборке профилей. В запрос уходят только
+описания тарифов, данных абонентов в нём нет. В остальном агент работает офлайн: объект `env` и файлы
 `data/change_tariff.csv`, `tariff_dictionary.csv`, `tariff_profiles.json` он
 ищет рядом с `agent.py`, а затем в текущей папке. Если нет
 `data/change_tariff.csv`, агент строит кандидатов из апселла на более дорогие
